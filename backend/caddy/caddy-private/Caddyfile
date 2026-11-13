@@ -1,0 +1,85 @@
+{
+    log {
+        output file /logs/caddy.log {
+            roll_size 20mb
+            roll_keep 30
+            roll_keep_for 2160h
+        }
+        format json
+        exclude tls.handshake http.stdlib
+    }
+    log handshakes {
+        output file /logs/caddy-tls.log {
+            roll_size 20mb
+            roll_keep 30
+            roll_keep_for 2160h
+        }
+        format json
+        level DEBUG
+        include tls.handshake http.stdlib
+    }
+}
+
+
+
+www.{$PRIVATE_DOMAIN} {
+    redir https://{$PRIVATE_DOMAIN}{uri}
+}
+
+{$PRIVATE_AUTH_DOMAIN} {
+    reverse_proxy authelia:9091 {
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+{$PRIVATE_DOMAIN} {
+    handle /jellyfin* {
+        route {
+            @danger {
+                path */Subtitles */LiveTv/* */Plugins/* */ScheduledTasks/*
+                path */System/Restart */System/Shutdown */System/Configuration*
+                path */Items/*/RemoteImages/* */Images/Remote*
+            }
+            respond @danger 403
+
+            # Dont list user names
+            @userlist path_regexp userlist (?i)^/jellyfin/users/public/?$
+            header @userlist Content-Type application/json
+            respond @userlist "[]" 200
+
+            # Nothing unauth reaches jellyfin
+            forward_auth jf-gate:8000 {
+                uri /check
+                header_up X-Real-IP {remote_host}
+            }
+
+            reverse_proxy jellyfin:8096 {
+                header_up X-Real-IP {remote_host}
+            }
+        }
+    }
+
+    handle /files* {
+        forward_auth authelia:9091 {
+            uri /api/authz/forward-auth
+            copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+        }
+        reverse_proxy copyparty:3923 {
+            header_up X-Real-IP {remote_host}
+            header_up {$IDP_PROOF_HEADER} 1
+        }
+    }
+
+    handle {
+        respond 404
+    }
+
+    log {
+        output file /logs/access.log {
+            roll_size 20mb
+            roll_keep 100000
+            roll_keep_for 36500d
+        }
+        format json
+    }
+}

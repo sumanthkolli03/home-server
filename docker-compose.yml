@@ -1,0 +1,348 @@
+x-logopts: &logopts
+  driver: "json-file"
+  options: { max-size: "10m", max-file: "5" }
+
+x-sysloglogopts: &sysloglogopts
+  driver: syslog
+  options:
+    syslog-address: "udp://127.0.0.1:5514"
+    syslog-format: "rfc5424micro"
+    tag: "{{.Name}}"
+
+services:
+  # ===== logging sidecar =====
+  syslog:
+    image: lscr.io/linuxserver/syslog-ng:latest
+    container_name: syslog
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:5514:5514/udp"
+    volumes:
+      - ./backend/syslog/syslog-ng.conf:/config/syslog-ng.conf
+      - ./logs/docker:/logs
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+    networks:
+      - log_net
+    logging: *logopts
+
+  # ===== PUBLIC: PUBLIC_DOMAIN and its subdomains, through the public VPS =====
+  # The public apps themselves live in generated/docker-compose.apps.yml, written by the generator
+  # from backend/public-apps/*/app.toml (.env's COMPOSE_FILE adds that file).
+  wg-public:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wg-public
+    restart: unless-stopped
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./backend/wg/wg-public/wg_confs:/config/wg_confs
+    networks:                    # each public app's network is added by generated/docker-compose.apps.yml
+      - public_net
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=0
+      - net.ipv4.ip_forward=0
+    depends_on: [syslog]
+    logging: *sysloglogopts
+
+  caddy-public:
+    image: caddy:latest
+    container_name: caddy-public
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "service:wg-public"
+    environment:                 # site names come from .env; each app's are added by the generated file
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env}
+    depends_on: [wg-public]
+    volumes:
+      - ./backend/caddy/caddy-public/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./generated/caddy-public:/etc/caddy/apps:ro   # one site file per app, written by the generator
+      - ./internal-config/caddy/caddy-public:/data
+      - ./logs/caddy/caddy-public:/logs/caddy
+    logging: *logopts
+
+  # ===== PRIVATE: PRIVATE_DOMAIN (family), through the private VPS =====
+  wg-private:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wg-private
+    restart: unless-stopped
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./backend/wg/wg-private/wg_confs:/config/wg_confs
+    networks:
+      private_net:
+        gw_priority: 1              # default route (tunnel UDP + Caddy ACME) stays on private_net
+      jellyfin_net:
+        ipv4_address: 10.252.2.2    # Caddy's address toward Jellyfin = Jellyfin "Known proxies"
+      copyparty_net: {}
+      authelia_net: {}
+      jf-gate_net: {}               # Caddy -> jf-gate
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=0
+      - net.ipv4.ip_forward=0
+    depends_on: [syslog]
+    logging: *sysloglogopts
+
+  caddy-private:
+    image: caddy:latest
+    container_name: caddy-private
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "service:wg-private"
+    environment:                 # site names and secrets come from .env
+      - PRIVATE_AUTH_DOMAIN=${PRIVATE_AUTH_DOMAIN:?set PRIVATE_AUTH_DOMAIN in .env}
+      - IDP_PROOF_HEADER=${IDP_PROOF_HEADER:?set IDP_PROOF_HEADER in .env}
+      - PRIVATE_DOMAIN=${PRIVATE_DOMAIN:?set PRIVATE_DOMAIN in .env}
+    depends_on: [wg-private]
+    volumes:
+      - ./backend/caddy/caddy-private/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./internal-config/caddy/caddy-private:/data
+      - ./logs/caddy/caddy-private:/logs
+    logging: *logopts
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:8096:8096"     # admin from this PC only; the public path is Caddy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./internal-config/private-apps/jellyfin:/config
+      - ./logs/private-apps/jellyfin/app:/config/log
+      - ./backend/private-apps/jellyfin/logging.json:/config/logging.json:ro
+      - ./shared-files/media:/data/media:ro
+    tmpfs:
+      - /transcode:size=8g,mode=1777
+    networks:
+      - jellyfin_net
+      - jfapi_net
+    logging: *logopts
+
+  # Token gate: Caddy asks it about every /jellyfin request. Standard library only.
+  jf-gate:
+    build: ./backend/private-apps/jf-gate
+    image: jf-gate:local
+    container_name: jf-gate
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    networks:
+      - jf-gate_net               # reached by Caddy
+      - jfapi_net                 # reaches Jellyfin, for token checks only
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    environment:
+      GATE_MODE: enforce          # observe = log what would be blocked, block nothing
+      JELLYFIN_URL: http://jellyfin:8096/jellyfin
+    volumes:
+      - ./logs/private-apps/jf-gate/app:/logs
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging: *logopts
+
+  copyparty:
+    image: copyparty/ac:latest
+    container_name: copyparty
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./backend/private-apps/copyparty:/cfg:ro
+      - ./internal-config/private-apps/copyparty:/hist
+      - ./logs/private-apps/copyparty/app:/logs
+      - ./shared-files:/w
+      - ./logs:/logview:ro
+    environment:
+      - TZ=${TZ:-UTC}
+      - XDG_CONFIG_HOME=/hist
+      - IDP_PROOF_HEADER=${IDP_PROOF_HEADER:?set IDP_PROOF_HEADER in .env}
+    networks:
+      - copyparty_net
+    logging: *logopts
+
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./backend/authelia:/config:ro
+      - ./internal-config/authelia:/data
+      - ./logs/authelia:/logs
+    environment:
+      - TZ=${TZ:-UTC}
+      - AUTHELIA_SESSION_SECRET_FILE=/config/secrets/SESSION_SECRET
+      - AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE=/config/secrets/STORAGE_KEY
+      - AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE=/config/secrets/JWT_SECRET
+      - X_AUTHELIA_CONFIG_FILTERS=template
+      - PRIVATE_AUTH_DOMAIN=${PRIVATE_AUTH_DOMAIN:?set PRIVATE_AUTH_DOMAIN in .env}
+      - PRIVATE_DOMAIN=${PRIVATE_DOMAIN:?set PRIVATE_DOMAIN in .env}
+    networks:
+      - authelia_net
+    logging: *logopts
+
+  # ===== INTERNAL: loopback only =====
+  caddy-internal:
+    image: caddy:latest
+    container_name: caddy-internal
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE          # the stock binary carries this file capability; exec fails without it
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /data:size=8m,mode=1777
+      - /config:size=8m,mode=1777
+      - /tmp:size=8m,mode=1777
+    ports:
+      - "127.0.0.1:9999:9999"
+    networks:
+      caddy-internal_net:
+        ipv4_address: 10.252.4.2
+      log-viewer_net: {}
+    volumes:
+      - ./backend/caddy/caddy-internal/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./logs/caddy/caddy-internal:/logs/caddy
+      - ./logs/internal-apps/log-viewer/access:/logs/internal-apps/log-viewer/access
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *logopts
+
+  log-viewer:
+    build: ./backend/internal-apps/log-viewer
+    image: log-viewer:local
+    container_name: log-viewer
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      TZ: ${TZ:-UTC}
+    networks:
+      - log-viewer_net            # reached by caddy-internal
+      - log-viewer_out            # its health probes
+    volumes:
+      - ./logs:/mnt/logs:ro
+      - ./logs/internal-apps/log-viewer/app:/logs
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logopts
+
+  # The only container with the Docker socket: no network, and it reads no log.
+  log-collector:
+    build: ./backend/internal-apps/log-viewer
+    image: log-viewer:local
+    container_name: log-collector
+    restart: unless-stopped
+    command: ["python", "collect.py"]
+    user: "0:0"                   # the socket is root's anyway
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE              # writes into logs/ folders you own and sizes every folder (a native disk enforces owners)
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/srv:ro                 # sizes only: it stats, never opens a file
+      - ./logs/security:/out/security
+      - ./logs/metrics:/out/metrics
+      - ./logs/internal-apps/log-collector/app:/logs
+    mem_limit: 256m
+    pids_limit: 64
+    logging: *logopts
+
+
+networks:
+  # --- public ---
+  public_net:           # wg-public only: its egress (tunnel UDP + Caddy ACME)
+    internal: false
+  # --- private ---
+  private_net:          # wg-private only: its egress (tunnel UDP + Caddy ACME). Mirrors public_net
+    internal: false
+  jellyfin_net:         # jellyfin + wg-private. Not internal: Jellyfin fetches metadata
+    internal: false
+    ipam:
+      config:
+        - subnet: 10.252.2.0/24
+          ip_range: 10.252.2.128/25   # automatic addresses (jellyfin) come from .128 up, so .2 is never taken
+          gateway: 10.252.2.1
+  copyparty_net:        # copyparty + wg-private. No internet
+    internal: true
+  authelia_net:         # authelia + wg-private. Not internal: NTP check at startup (clock drift)
+    internal: false
+  jf-gate_net:          # wg-private (Caddy) + jf-gate. No internet
+    internal: true
+  jfapi_net:            # jf-gate + jellyfin, token checks only. No internet. wg-private must NOT join:
+    internal: true      # Caddy has to reach Jellyfin only via jellyfin_net (10.252.2.2 = Known proxies)
+  # --- system and internal ---
+  log_net:              # syslog only. Must stay non-internal, or 127.0.0.1:5514 stops being published
+    internal: false
+  caddy-internal_net:   # caddy-internal only. Not internal, so 127.0.0.1:9999 publishes; no NAT, so nothing leaves
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+    ipam:
+      config:
+        - subnet: 10.252.4.0/24
+          ip_range: 10.252.4.128/25   # automatic addresses from .128 up, so .2 is never taken
+          gateway: 10.252.4.1
+  log-viewer_net:       # caddy-internal + log-viewer. No internet
+    internal: true
+  log-viewer_out:       # log-viewer only: its health probes
+    internal: false

@@ -1,0 +1,71 @@
+# caddy-internal: the loopback gateway for internal apps. Published only on
+# the host's 127.0.0.1:9999; reached from elsewhere through `ssh -L 9999:localhost:9999`.
+# It answers only names typed into a browser (anything else: 421 and the connection closes,
+# the DNS-rebinding guard) and refuses writes and websocket upgrades that come from another
+# site, so a page open in the browser can't drive what sits behind it.
+{
+	admin off
+	auto_https off
+	default_bind 10.252.4.2
+	log {
+		output file /logs/caddy/caddy.log {
+			roll_size 20mb
+			roll_keep 30
+			roll_keep_for 2160h
+		}
+		format json
+	}
+}
+
+# Writes (anything but GET/HEAD) and websocket upgrades need this site's own Origin;
+# a missing Origin is refused too.
+(same-origin) {
+	@foreign_write {
+		not method GET HEAD
+		not header Origin {args[0]}
+	}
+	respond @foreign_write "Forbidden" 403
+	@foreign_ws {
+		header Upgrade *
+		not header Origin {args[0]}
+	}
+	respond @foreign_ws "Forbidden" 403
+}
+
+http://logs.localhost:9999, http://localhost:9999, http://127.0.0.1:9999 {
+	log {
+		output file /logs/internal-apps/log-viewer/access/access.log {
+			roll_size 20mb
+			roll_keep 100000
+			roll_keep_for 36500d
+		}
+		format json
+	}
+	@bare host localhost 127.0.0.1
+	redir @bare http://logs.localhost:9999{uri} 302
+	import same-origin http://logs.localhost:9999
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+	}
+	reverse_proxy log-viewer:8080
+}
+
+# Any other name, a look-alike or none at all.
+http://:9999 {
+	log {
+		output file /logs/caddy/misdirected-access.log {
+			roll_size 20mb
+			roll_keep 100000
+			roll_keep_for 36500d
+		}
+		format json
+	}
+	respond "Misdirected Request" 421 {
+		close
+	}
+}

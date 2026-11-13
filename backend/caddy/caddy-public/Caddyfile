@@ -1,0 +1,26 @@
+{
+    log {
+        output file /logs/caddy/caddy.log {
+            roll_size 20mb
+            roll_keep 30
+            roll_keep_for 2160h
+        }
+        format json
+        exclude tls.handshake http.stdlib
+    }
+    log handshakes {
+        output file /logs/caddy/caddy-tls.log {
+            roll_size 20mb
+            roll_keep 30
+            roll_keep_for 2160h
+        }
+        format json
+        level DEBUG
+        include tls.handshake http.stdlib
+    }
+}
+
+# Every public app's sites, one file per app, written by the generator (generator/apps.sh)
+# from backend/public-apps/*/app.toml. There is no catch-all site, ever: with the wildcard DNS
+# record it would answer every name.
+import apps/*.caddy

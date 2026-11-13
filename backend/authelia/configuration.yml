@@ -1,0 +1,76 @@
+theme: 'dark'
+
+server:
+  address: 'tcp://0.0.0.0:9091'
+
+log:
+  level: 'info'
+  format: 'text'
+  file_path: '/logs/authelia.log'
+  keep_stdout: true
+
+totp:
+  issuer: '{{ mustEnv "PRIVATE_DOMAIN" }}'
+  period: 30
+  skew: 1
+
+identity_validation:
+  reset_password:
+    jwt_lifespan: '5 minutes'
+
+authentication_backend:
+  password_reset:
+    disable: true
+  file:
+    path: '/config/users_database.yml'
+    watch: false
+    password:
+      algorithm: 'argon2'
+      argon2:
+        variant: 'argon2id'
+        iterations: 3
+        memory: 65536
+        parallelism: 4
+        key_length: 32
+        salt_length: 16
+
+access_control:
+  default_policy: 'deny'
+  rules:
+    - domain: '{{ mustEnv "PRIVATE_AUTH_DOMAIN" }}'
+      policy: 'bypass'
+
+    - domain: '{{ mustEnv "PRIVATE_DOMAIN" }}'
+      resources: ['^/files(/.*)?$']
+      subject: ['group:admins']
+      policy: 'two_factor'
+
+    - domain: '{{ mustEnv "PRIVATE_DOMAIN" }}'
+      resources: ['^/files(/.*)?$']
+      subject: ['group:family', 'group:guests']
+      policy: 'one_factor'
+
+session:
+  name: 'authelia_session'
+  same_site: 'lax'
+  expiration: '12 hours'
+  inactivity: '2 hours'
+  remember_me: '1 month'
+  cookies:
+    - domain: '{{ mustEnv "PRIVATE_DOMAIN" }}'
+      authelia_url: 'https://{{ mustEnv "PRIVATE_AUTH_DOMAIN" }}'
+      default_redirection_url: 'https://{{ mustEnv "PRIVATE_DOMAIN" }}/files'
+
+regulation:
+  max_retries: 5
+  find_time: '2 minutes'
+  ban_time: '10 minutes'
+
+storage:
+  local:
+    path: '/data/db.sqlite3'
+
+notifier:
+  disable_startup_check: false
+  filesystem:
+    filename: '/data/notification.txt'

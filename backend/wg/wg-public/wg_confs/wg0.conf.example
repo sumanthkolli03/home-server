@@ -1,0 +1,21 @@
+[Interface]
+PrivateKey = REPLACE_WITH_THIS_PCS_PRIVATE_KEY
+Address = 10.0.1.2/24
+MTU = 1200
+Table = off
+
+PostUp = iptables -A OUTPUT -s 10.0.1.2 ! -o wg0 -j DROP
+PostUp = ip rule add from 10.0.1.2 lookup 200
+PostUp = ip route add default dev wg0 table 200
+
+PostDown = ip route del default dev wg0 table 200 || true
+PostDown = ip rule del from 10.0.1.2 lookup 200 || true
+
+PostUp = iptables -P FORWARD DROP
+PostDown = iptables -D OUTPUT -s 10.0.1.2 ! -o wg0 -j DROP || true
+
+[Peer]
+PublicKey = REPLACE_WITH_THE_VPS_PUBLIC_KEY
+Endpoint = VPS_PUBLIC_IP:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25

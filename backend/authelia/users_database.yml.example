@@ -1,0 +1,24 @@
+# Authelia accounts. Copy to users_database.yml (never uploaded) and fill in.
+# Make a password hash with:
+#   docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password 'CHANGE_ME'
+# The groups decide access (configuration.yml): admins = two-factor and full access to /files,
+# family = read and upload, guests = read only.
+users:
+  admin:
+    disabled: false
+    displayname: 'Admin'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME$REPLACE_ME'
+    email: 'admin@example.com'
+    groups: ['admins']
+  family:
+    disabled: false
+    displayname: 'Family'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME$REPLACE_ME'
+    email: 'family@example.com'
+    groups: ['family']
+  guest:
+    disabled: false
+    displayname: 'Guest'
+    password: '$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME$REPLACE_ME'
+    email: 'guest@example.com'
+    groups: ['guests']

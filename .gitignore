@@ -1,0 +1,50 @@
+# Never uploaded. Secrets are matched by file name wherever they sit, so moving a folder can't
+# expose one. Before every push: bash runtime-scripts/check-public.sh
+
+# ---- Private docs and notes ----
+/docs/
+NOTES.txt
+TEMP.txt
+
+# ---- Secrets (each has a tracked .example next to it) ----
+.env
+wg*.conf
+users_database.yml
+users.toml
+JWT_SECRET
+SESSION_SECRET
+STORAGE_KEY
+**/secrets/*
+!**/secrets/*.example
+*.key
+*.pem
+!*.key.example
+!*.pem.example
+
+# ---- Public apps: each is its own project, added with the generator; none is part of this repo ----
+/backend/public-apps/*
+
+# ---- What the generator writes, and the generator itself (its own repo) ----
+/generated/
+/generator/
+
+# ---- Container state, logs, user data ----
+internal-config/
+logs/
+shared-files/
+
+# ---- Scratch and backups ----
+*.bin
+*.bak
+*.orig
+*.rej
+*~
+
+# ---- Local installs and caches (all builds happen in Docker) ----
+node_modules/
+__pycache__/
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+desktop.ini
