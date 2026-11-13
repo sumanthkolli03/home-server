@@ -1,12 +1,11 @@
-# Home server behind two VPS edges
+# The Home Server Project
 
-A self-hosted server that runs at home with **no open ports**. A media library and file sharing
-for family sit on one domain; public web apps sit on another. Each domain points at its own small
+A self-hosted server that runs at home with **no open ports**. Include a private and public domain. Each domain points at its own small
 VPS, and each VPS does nothing but forward ports 80 and 443 down a WireGuard tunnel to a Docker
 stack at home. TLS ends at home, every visitor's real IP reaches the logs, and the home IP is
 never exposed.
 
-This repo is the server: the tunnels, the reverse proxies, the private apps, the monitoring and
+This repo is the server framework: the tunnels, the reverse proxies, the private apps, the monitoring and
 the scripts. Public apps are separate projects, added by the
 [app generator](https://github.com/sumanthkolli03/app-generator). It isn't a one-command
 install: it needs two VPSes, two domains and WireGuard keys. It's here to show how the server is
